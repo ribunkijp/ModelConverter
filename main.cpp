@@ -17,7 +17,7 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
-// ---------------- 数据结构 ----------------
+//
 
 struct Vertex {
     float position[3]{};
@@ -34,7 +34,7 @@ struct MeshHeader {
     uint32_t materialIndex{};
 };
 
-// ---------------- 小工具 ----------------
+// 
 
 static inline void AddBoneWeight(Vertex& v, int boneId, float w) {
     for (int i = 0; i < 4; ++i) if (v.boneIDs[i] < 0) { v.boneIDs[i] = boneId; v.weights[i] = w; return; }
@@ -66,16 +66,20 @@ static bool FindBoneOffset(const aiScene* s, const std::string& name, aiMatrix4x
     return false;
 }
 
-// ---------------- 函数声明 ----------------
+// 
 void processMesh(unsigned, const aiMesh*, const std::string&, std::map<std::string, unsigned>&, unsigned&);
-void processMaterial(unsigned, const aiMaterial*, const std::string&);
+void processMaterial(unsigned int, const aiMaterial*, const aiScene*, const std::string&);
 void processSkeleton(const aiScene*, const std::string&, const std::map<std::string, unsigned>&);
 void processAnimation(unsigned, const aiAnimation*, const std::string&);
 void createSceneFile(const aiScene*, const std::string&);
 
-// ---------------- 主函数 ----------------
+//
 int main(int argc, char* argv[]) {
-    if (argc < 2) { std::cerr << "用法: ModelConverter.exe <输入文件.fbx>\n"; return 1; }
+   
+    if (argc < 2) {
+        std::cerr << "用法: ModelConverter.exe <输入文件.fbx>\n";
+        return 1;
+    }
 
     std::filesystem::path inPath(argv[1]);
     if (!std::filesystem::exists(inPath)) { std::cerr << "错误: 文件不存在: " << inPath << "\n"; return 1; }
@@ -88,7 +92,6 @@ int main(int argc, char* argv[]) {
 
     logln("[Info] Input : " + abs.string());
     logln("[Info] Output: " + std::filesystem::absolute(outDir).string());
-
 
     Assimp::Importer importer;
 
@@ -109,37 +112,21 @@ int main(int argc, char* argv[]) {
         aiProcess_ImproveCacheLocality |
         aiProcess_OptimizeMeshes |
         aiProcess_SortByPType |
-        aiProcess_CalcTangentSpace; // 这个标志确保了切线会被计算出来
+        aiProcess_CalcTangentSpace;
 
     const aiScene* scene = importer.ReadFile(abs.u8string(), flags);
     if (!scene) { logln(std::string("[Error] Assimp: ") + importer.GetErrorString()); return 1; }
 
-    {
-        std::ostringstream oss;
-        oss << "meshes=" << scene->mNumMeshes
-            << " materials=" << scene->mNumMaterials
-            << " animations=" << scene->mNumAnimations;
-        logln(oss.str());
-    }
-    for (unsigned i = 0; i < scene->mNumMeshes; ++i) {
-        const aiMesh* m = scene->mMeshes[i];
-        std::ostringstream oss;
-        oss << "  mesh[" << i << "] v=" << m->mNumVertices << " f=" << m->mNumFaces
-            << " bones=" << m->mNumBones
-            << " hasUV=" << (m->HasTextureCoords(0) ? "Y" : "N")
-            << " hasN=" << (m->HasNormals() ? "Y" : "N");
-        logln(oss.str());
-    }
-
     std::map<std::string, unsigned> boneMap;
     unsigned boneCounter = 0;
 
+    
     for (unsigned i = 0; i < scene->mNumMeshes; ++i)
         processMesh(i, scene->mMeshes[i], outDir, boneMap, boneCounter);
     { std::ostringstream oss; oss << "[Info] totalBones(from meshes) = " << boneMap.size(); logln(oss.str()); }
 
     for (unsigned i = 0; i < scene->mNumMaterials; ++i)
-        processMaterial(i, scene->mMaterials[i], outDir);
+        processMaterial(i, scene->mMaterials[i], scene, outDir);
 
     processSkeleton(scene, outDir, boneMap);
 
@@ -156,31 +143,72 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
-// ---------------- 实现：网格 ----------------
+// 网格
 void processMesh(unsigned idx, const aiMesh* mesh, const std::string& outDir,
     std::map<std::string, unsigned>& boneMap, unsigned& boneCounter)
 {
+    
+    // 设置缩放比例
+    const float scaleFactor = 0.01f;
+
+    // 设置旋转
+    const bool applyRotationX = false; // X轴旋转
+    const float angleX_degrees = -90.0f;
+
+    const bool applyRotationY = true;  // Y轴旋转
+    const float angleY_degrees = 180.0f;
+
+    const bool applyRotationZ = false; // Z轴旋转
+    const float angleZ_degrees = 0.0f;
+   
+
+    aiMatrix4x4 correctionMatrix;
+    if (applyRotationZ) {
+        aiMatrix4x4 rotZ;
+        aiMatrix4x4::RotationZ(angleZ_degrees * (AI_MATH_PI_F / 180.0f), rotZ);
+        correctionMatrix = rotZ * correctionMatrix;
+    }
+    if (applyRotationX) {
+        aiMatrix4x4 rotX;
+        aiMatrix4x4::RotationX(angleX_degrees * (AI_MATH_PI_F / 180.0f), rotX);
+        correctionMatrix = rotX * correctionMatrix;
+    }
+    if (applyRotationY) {
+        aiMatrix4x4 rotY;
+        aiMatrix4x4::RotationY(angleY_degrees * (AI_MATH_PI_F / 180.0f), rotY);
+        correctionMatrix = rotY * correctionMatrix;
+    }
+
+    aiMatrix4x4 normalMatrix = correctionMatrix;
+    normalMatrix.Inverse().Transpose();
+
     std::vector<Vertex> vertices(mesh->mNumVertices);
     for (unsigned i = 0; i < mesh->mNumVertices; ++i) {
-        vertices[i].position[0] = mesh->mVertices[i].x;
-        vertices[i].position[1] = mesh->mVertices[i].y;
-        vertices[i].position[2] = mesh->mVertices[i].z;
-       
+        aiVector3D pos = mesh->mVertices[i];
+        aiVector3D nml = mesh->HasNormals() ? mesh->mNormals[i] : aiVector3D(0, 1, 0);
+        aiVector3D tan = mesh->HasTangentsAndBitangents() ? mesh->mTangents[i] : aiVector3D(1, 0, 0);
+
+        pos *= scaleFactor;
+        pos = correctionMatrix * pos;
+        nml = normalMatrix * nml;
+        tan = normalMatrix * tan;
+
+        vertices[i].position[0] = pos.x;
+        vertices[i].position[1] = pos.y;
+        vertices[i].position[2] = pos.z;
+
         if (mesh->HasTextureCoords(0)) {
             vertices[i].texcoord[0] = mesh->mTextureCoords[0][i].x;
             vertices[i].texcoord[1] = mesh->mTextureCoords[0][i].y;
         }
-        if (mesh->HasNormals()) {
-            vertices[i].normal[0] = mesh->mNormals[i].x;
-            vertices[i].normal[1] = mesh->mNormals[i].y;
-            vertices[i].normal[2] = mesh->mNormals[i].z;
-        }
 
-        if (mesh->HasTangentsAndBitangents()) {
-            vertices[i].tangent[0] = mesh->mTangents[i].x;
-            vertices[i].tangent[1] = mesh->mTangents[i].y;
-            vertices[i].tangent[2] = mesh->mTangents[i].z;
-        }
+        vertices[i].normal[0] = nml.x;
+        vertices[i].normal[1] = nml.y;
+        vertices[i].normal[2] = nml.z;
+
+        vertices[i].tangent[0] = tan.x;
+        vertices[i].tangent[1] = tan.y;
+        vertices[i].tangent[2] = tan.z;
     }
 
     for (unsigned bi = 0; bi < mesh->mNumBones; ++bi) {
@@ -211,9 +239,11 @@ void processMesh(unsigned idx, const aiMesh* mesh, const std::string& outDir,
     out.write((char*)indices.data(), indices.size() * sizeof(uint32_t));
 }
 
-// ---------------- 实现：材质 ----------------
-void processMaterial(unsigned idx, const aiMaterial* mat, const std::string& outDir) {
+// 材质 
+void processMaterial(unsigned int idx, const aiMaterial* mat, const aiScene* scene, const std::string& outDir)
+{
     json j;
+    auto logln = [](const std::string& s) { std::cout << s << std::endl; };
 
     aiColor4D diffuseColor;
     if (AI_SUCCESS == aiGetMaterialColor(mat, AI_MATKEY_COLOR_DIFFUSE, &diffuseColor)) {
@@ -223,10 +253,39 @@ void processMaterial(unsigned idx, const aiMaterial* mat, const std::string& out
         j["diffuseColor"] = { 1.0f, 1.0f, 1.0f, 1.0f };
     }
 
-    aiString texturePath;
-    if (AI_SUCCESS == mat->GetTexture(aiTextureType_DIFFUSE, 0, &texturePath)) {
-        std::filesystem::path p(texturePath.C_Str());
-        j["diffuseTexture"] = p.filename().string();
+    aiString texturePath_ai;
+    if (AI_SUCCESS == mat->GetTexture(aiTextureType_DIFFUSE, 0, &texturePath_ai))
+    {
+        std::string texturePath = texturePath_ai.C_Str();
+        if (texturePath.rfind('*', 0) == 0)
+        {
+            int textureIndex = std::stoi(texturePath.substr(1));
+            if (scene && textureIndex < (int)scene->mNumTextures)
+            {
+                const aiTexture* embeddedTexture = scene->mTextures[textureIndex];
+                std::string extension = "png";
+                if (embeddedTexture->achFormatHint[0] != 0) {
+                    extension = embeddedTexture->achFormatHint;
+                }
+                std::string outputTextureFilename = "texture_" + std::to_string(idx) + "." + extension;
+
+                if (embeddedTexture->mHeight == 0) {
+                    std::ofstream textureFile(outDir + "/" + outputTextureFilename, std::ios::binary);
+                    textureFile.write(reinterpret_cast<const char*>(embeddedTexture->pcData), embeddedTexture->mWidth);
+                    textureFile.close();
+                    j["diffuseTexture"] = outputTextureFilename;
+                    logln("  [Info] Extracted embedded texture to " + outputTextureFilename);
+                }
+                else {
+                    logln("  [Warning] Uncompressed embedded texture format not supported.");
+                }
+            }
+        }
+        else
+        {
+            std::filesystem::path p(texturePath);
+            j["diffuseTexture"] = p.filename().string();
+        }
     }
 
     std::string path = outDir + "/material_" + std::to_string(idx) + ".material.json";
@@ -234,7 +293,7 @@ void processMaterial(unsigned idx, const aiMaterial* mat, const std::string& out
     out << j.dump(4);
 }
 
-// ---------------- 实现：骨架 ----------------
+// 骨架
 void processSkeleton(const aiScene* scene, const std::string& outDir,
     const std::map<std::string, unsigned>& boneMap)
 {
@@ -257,7 +316,7 @@ void processSkeleton(const aiScene* scene, const std::string& outDir,
     std::ofstream out(outDir + "/skeleton.json"); out << j.dump(2);
 }
 
-// ---------------- 实现：动画 ----------------
+// 实现：动画 
 void processAnimation(unsigned idx, const aiAnimation* anim, const std::string& outDir) {
     json j;
     std::string name = anim->mName.C_Str(); if (name.empty()) name = "anim_" + std::to_string(idx);
@@ -290,7 +349,7 @@ void processAnimation(unsigned idx, const aiAnimation* anim, const std::string& 
     out << j.dump(2);
 }
 
-// ---------------- 实现：场景 ----------------
+// 场景
 void createSceneFile(const aiScene* scene, const std::string& outDir) {
     json j;
     j["mesh_count"] = scene->mNumMeshes;
