@@ -21,9 +21,9 @@ using json = nlohmann::json;
 
 struct Vertex {
     float position[3]{};
-    float normal[3]{};
     float texcoord[2]{};
-    float tangent[3]{}; // 新增了切线
+    float normal[3]{};
+    float tangent[3]{};
     int   boneIDs[4]{ -1, -1, -1, -1 };
     float weights[4]{ 0, 0, 0, 0 };
 };
@@ -165,16 +165,17 @@ void processMesh(unsigned idx, const aiMesh* mesh, const std::string& outDir,
         vertices[i].position[0] = mesh->mVertices[i].x;
         vertices[i].position[1] = mesh->mVertices[i].y;
         vertices[i].position[2] = mesh->mVertices[i].z;
+       
+        if (mesh->HasTextureCoords(0)) {
+            vertices[i].texcoord[0] = mesh->mTextureCoords[0][i].x;
+            vertices[i].texcoord[1] = mesh->mTextureCoords[0][i].y;
+        }
         if (mesh->HasNormals()) {
             vertices[i].normal[0] = mesh->mNormals[i].x;
             vertices[i].normal[1] = mesh->mNormals[i].y;
             vertices[i].normal[2] = mesh->mNormals[i].z;
         }
-        if (mesh->HasTextureCoords(0)) {
-            vertices[i].texcoord[0] = mesh->mTextureCoords[0][i].x;
-            vertices[i].texcoord[1] = mesh->mTextureCoords[0][i].y;
-        }
-        // 【新增】读取切线数据
+
         if (mesh->HasTangentsAndBitangents()) {
             vertices[i].tangent[0] = mesh->mTangents[i].x;
             vertices[i].tangent[1] = mesh->mTangents[i].y;
