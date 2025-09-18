@@ -17,7 +17,7 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
-//
+
 
 struct Vertex {
     float position[3]{};
@@ -34,7 +34,14 @@ struct MeshHeader {
     uint32_t materialIndex{};
 };
 
-// 
+
+struct TempBoneInfo {
+    std::string name;
+    unsigned int originalIndex;
+    int parentIndex; 
+    aiMatrix4x4 offsetMatrix;
+};
+
 
 static inline void AddBoneWeight(Vertex& v, int boneId, float w) {
     for (int i = 0; i < 4; ++i) if (v.boneIDs[i] < 0) { v.boneIDs[i] = boneId; v.weights[i] = w; return; }
@@ -66,16 +73,15 @@ static bool FindBoneOffset(const aiScene* s, const std::string& name, aiMatrix4x
     return false;
 }
 
-// 
+
 void processMesh(unsigned, const aiMesh*, const std::string&, std::map<std::string, unsigned>&, unsigned&);
 void processMaterial(unsigned int, const aiMaterial*, const aiScene*, const std::string&);
 void processSkeleton(const aiScene*, const std::string&, const std::map<std::string, unsigned>&);
 void processAnimation(unsigned, const aiAnimation*, const std::string&);
 void createSceneFile(const aiScene*, const std::string&);
 
-//
+
 int main(int argc, char* argv[]) {
-   
     if (argc < 2) {
         std::cerr << "用法: ModelConverter.exe <输入文件.fbx>\n";
         return 1;
@@ -120,10 +126,8 @@ int main(int argc, char* argv[]) {
     std::map<std::string, unsigned> boneMap;
     unsigned boneCounter = 0;
 
-    
     for (unsigned i = 0; i < scene->mNumMeshes; ++i)
         processMesh(i, scene->mMeshes[i], outDir, boneMap, boneCounter);
-    { std::ostringstream oss; oss << "[Info] totalBones(from meshes) = " << boneMap.size(); logln(oss.str()); }
 
     for (unsigned i = 0; i < scene->mNumMaterials; ++i)
         processMaterial(i, scene->mMaterials[i], scene, outDir);
@@ -135,10 +139,6 @@ int main(int argc, char* argv[]) {
 
     createSceneFile(scene, outDir);
 
-    logln("[Info] Files in output dir:");
-    for (auto& it : std::filesystem::directory_iterator(outDir))
-        logln("  - " + it.path().filename().string());
-
     logln("模型已成功拆分到目录: " + outDir);
     return 0;
 }
@@ -147,68 +147,34 @@ int main(int argc, char* argv[]) {
 void processMesh(unsigned idx, const aiMesh* mesh, const std::string& outDir,
     std::map<std::string, unsigned>& boneMap, unsigned& boneCounter)
 {
-    
-    // 设置缩放比例
+    // 配置模型
     const float scaleFactor = 0.01f;
-
-    // 设置旋转
-    const bool applyRotationX = false; // X轴旋转
+    const bool applyRotationX = false;
     const float angleX_degrees = -90.0f;
-
-    const bool applyRotationY = true;  // Y轴旋转
+    const bool applyRotationY = true;
     const float angleY_degrees = 180.0f;
-
-    const bool applyRotationZ = false; // Z轴旋转
+    const bool applyRotationZ = false;
     const float angleZ_degrees = 0.0f;
-   
 
     aiMatrix4x4 correctionMatrix;
-    if (applyRotationZ) {
-        aiMatrix4x4 rotZ;
-        aiMatrix4x4::RotationZ(angleZ_degrees * (AI_MATH_PI_F / 180.0f), rotZ);
-        correctionMatrix = rotZ * correctionMatrix;
-    }
-    if (applyRotationX) {
-        aiMatrix4x4 rotX;
-        aiMatrix4x4::RotationX(angleX_degrees * (AI_MATH_PI_F / 180.0f), rotX);
-        correctionMatrix = rotX * correctionMatrix;
-    }
-    if (applyRotationY) {
-        aiMatrix4x4 rotY;
-        aiMatrix4x4::RotationY(angleY_degrees * (AI_MATH_PI_F / 180.0f), rotY);
-        correctionMatrix = rotY * correctionMatrix;
-    }
-
+    if (applyRotationZ) { aiMatrix4x4 rotZ; aiMatrix4x4::RotationZ(angleZ_degrees * (AI_MATH_PI_F / 180.0f), rotZ); correctionMatrix = rotZ * correctionMatrix; }
+    if (applyRotationX) { aiMatrix4x4 rotX; aiMatrix4x4::RotationX(angleX_degrees * (AI_MATH_PI_F / 180.0f), rotX); correctionMatrix = rotX * correctionMatrix; }
+    if (applyRotationY) { aiMatrix4x4 rotY; aiMatrix4x4::RotationY(angleY_degrees * (AI_MATH_PI_F / 180.0f), rotY); correctionMatrix = rotY * correctionMatrix; }
     aiMatrix4x4 normalMatrix = correctionMatrix;
     normalMatrix.Inverse().Transpose();
 
     std::vector<Vertex> vertices(mesh->mNumVertices);
     for (unsigned i = 0; i < mesh->mNumVertices; ++i) {
-        aiVector3D pos = mesh->mVertices[i];
+        aiVector3D pos = mesh->mVertices[i] * scaleFactor;
         aiVector3D nml = mesh->HasNormals() ? mesh->mNormals[i] : aiVector3D(0, 1, 0);
         aiVector3D tan = mesh->HasTangentsAndBitangents() ? mesh->mTangents[i] : aiVector3D(1, 0, 0);
-
-        pos *= scaleFactor;
         pos = correctionMatrix * pos;
         nml = normalMatrix * nml;
         tan = normalMatrix * tan;
-
-        vertices[i].position[0] = pos.x;
-        vertices[i].position[1] = pos.y;
-        vertices[i].position[2] = pos.z;
-
-        if (mesh->HasTextureCoords(0)) {
-            vertices[i].texcoord[0] = mesh->mTextureCoords[0][i].x;
-            vertices[i].texcoord[1] = mesh->mTextureCoords[0][i].y;
-        }
-
-        vertices[i].normal[0] = nml.x;
-        vertices[i].normal[1] = nml.y;
-        vertices[i].normal[2] = nml.z;
-
-        vertices[i].tangent[0] = tan.x;
-        vertices[i].tangent[1] = tan.y;
-        vertices[i].tangent[2] = tan.z;
+        vertices[i].position[0] = pos.x; vertices[i].position[1] = pos.y; vertices[i].position[2] = pos.z;
+        if (mesh->HasTextureCoords(0)) { vertices[i].texcoord[0] = mesh->mTextureCoords[0][i].x; vertices[i].texcoord[1] = mesh->mTextureCoords[0][i].y; }
+        vertices[i].normal[0] = nml.x; vertices[i].normal[1] = nml.y; vertices[i].normal[2] = nml.z;
+        vertices[i].tangent[0] = tan.x; vertices[i].tangent[1] = tan.y; vertices[i].tangent[2] = tan.z;
     }
 
     for (unsigned bi = 0; bi < mesh->mNumBones; ++bi) {
@@ -239,7 +205,7 @@ void processMesh(unsigned idx, const aiMesh* mesh, const std::string& outDir,
     out.write((char*)indices.data(), indices.size() * sizeof(uint32_t));
 }
 
-// 材质 
+// 材质
 void processMaterial(unsigned int idx, const aiMaterial* mat, const aiScene* scene, const std::string& outDir)
 {
     json j;
@@ -297,26 +263,73 @@ void processMaterial(unsigned int idx, const aiMaterial* mat, const aiScene* sce
 void processSkeleton(const aiScene* scene, const std::string& outDir,
     const std::map<std::string, unsigned>& boneMap)
 {
-    std::unordered_map<std::string, const aiNode*> nodeMap; BuildNodeMap(scene->mRootNode, nodeMap);
+    if (boneMap.empty()) {
+        json j;
+        j["bones"] = json::array();
+        std::ofstream out(outDir + "/skeleton.json");
+        out << j.dump(2);
+        return;
+    }
 
-    json j; j["bones"] = json::array();
+    std::unordered_map<std::string, const aiNode*> nodeMap;
+    BuildNodeMap(scene->mRootNode, nodeMap);
+
+    std::vector<TempBoneInfo> unsortedBones;
     for (const auto& kv : boneMap) {
-        const std::string& name = kv.first; unsigned id = kv.second;
+        const std::string& name = kv.first;
+        unsigned id = kv.second;
         int parentId = -1;
         auto itN = nodeMap.find(name);
         if (itN != nodeMap.end()) {
             const aiNode* p = itN->second->mParent;
-            if (p) { auto itP = boneMap.find(p->mName.C_Str()); if (itP != boneMap.end()) parentId = (int)itP->second; }
+            if (p) {
+                auto itP = boneMap.find(p->mName.C_Str());
+                if (itP != boneMap.end()) {
+                    parentId = (int)itP->second;
+                }
+            }
         }
         aiMatrix4x4 off;
-        if (!FindBoneOffset(scene, name, off)) off = aiMatrix4x4();
-        json jb; jb["id"] = id; jb["name"] = name; jb["parentId"] = parentId; jb["offset"] = MatrixToJson(off);
+        FindBoneOffset(scene, name, off);
+        unsortedBones.push_back({ name, id, parentId, off });
+    }
+
+    std::vector<TempBoneInfo> sortedBones;
+    std::vector<int> newIndices(boneMap.size());
+    std::vector<bool> added(boneMap.size(), false);
+    int addedCount = 0;
+    while ((size_t)addedCount < unsortedBones.size()) {
+        for (const auto& bone : unsortedBones) {
+            if (added[bone.originalIndex]) continue;
+            if (bone.parentIndex == -1 || added[bone.parentIndex]) {
+                newIndices[bone.originalIndex] = addedCount;
+                sortedBones.push_back(bone);
+                added[bone.originalIndex] = true;
+                addedCount++;
+            }
+        }
+    }
+
+    json j;
+    j["bones"] = json::array();
+    for (size_t i = 0; i < sortedBones.size(); ++i) {
+        auto& bone = sortedBones[i];
+        if (bone.parentIndex != -1) {
+            bone.parentIndex = newIndices[bone.parentIndex];
+        }
+        json jb;
+        jb["id"] = i;
+        jb["name"] = bone.name;
+        jb["parentId"] = bone.parentIndex;
+        jb["offset"] = MatrixToJson(bone.offsetMatrix);
         j["bones"].push_back(jb);
     }
-    std::ofstream out(outDir + "/skeleton.json"); out << j.dump(2);
+
+    std::ofstream out(outDir + "/skeleton.json");
+    out << j.dump(2);
 }
 
-// 实现：动画 
+// 动画
 void processAnimation(unsigned idx, const aiAnimation* anim, const std::string& outDir) {
     json j;
     std::string name = anim->mName.C_Str(); if (name.empty()) name = "anim_" + std::to_string(idx);
