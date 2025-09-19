@@ -17,6 +17,20 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
+// --- 全局模型配置
+const float G_SCALE_FACTOR = 0.01f; // 全局缩放比例
+
+const bool G_APPLY_ROTATION_X = false; // X轴旋转 (用于“扶正”Z-up到Y-up的模型)
+const float G_ANGLE_X_DEGREES = -90.0f;
+
+const bool G_APPLY_ROTATION_Y = true;  // Y轴旋转 (用于“转身”180度)
+const float G_ANGLE_Y_DEGREES = 180.0f;
+
+const bool G_APPLY_ROTATION_Z = false; // Z轴旋转 (备用)
+const float G_ANGLE_Z_DEGREES = 0.0f;
+
+
+
 
 
 struct Vertex {
@@ -38,7 +52,7 @@ struct MeshHeader {
 struct TempBoneInfo {
     std::string name;
     unsigned int originalIndex;
-    int parentIndex; 
+    int parentIndex;
     aiMatrix4x4 offsetMatrix;
 };
 
@@ -101,20 +115,11 @@ int main(int argc, char* argv[]) {
     logln("[Info] Output: " + std::filesystem::absolute(outDir).string());
 
     Assimp::Importer importer;
-
-    unsigned flags = aiProcess_Triangulate |
-        aiProcess_ConvertToLeftHanded |
-        aiProcess_GenNormals |
-        aiProcess_JoinIdenticalVertices |
-        aiProcess_ImproveCacheLocality |
-        aiProcess_OptimizeMeshes |
-        aiProcess_SortByPType |
-        aiProcess_CalcTangentSpace;
-
+    unsigned flags = aiProcess_Triangulate | aiProcess_ConvertToLeftHanded | aiProcess_GenNormals | aiProcess_JoinIdenticalVertices | aiProcess_ImproveCacheLocality | aiProcess_OptimizeMeshes | aiProcess_SortByPType | aiProcess_CalcTangentSpace;
     const aiScene* scene = importer.ReadFile(abs.u8string(), flags);
     if (!scene) { logln(std::string("[Error] Assimp: ") + importer.GetErrorString()); return 1; }
 
-
+   
     std::map<std::string, unsigned> tempBoneMap;
     unsigned tempBoneCounter = 0;
     for (unsigned i = 0; i < scene->mNumMeshes; ++i) {
@@ -127,10 +132,11 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    
     std::map<std::string, unsigned> finalBoneMap;
     processSkeleton(scene, outDir, tempBoneMap, finalBoneMap);
 
-
+    
     for (unsigned i = 0; i < scene->mNumMeshes; ++i)
         processMesh(i, scene->mMeshes[i], outDir, finalBoneMap);
 
@@ -150,33 +156,39 @@ int main(int argc, char* argv[]) {
 void processMesh(unsigned idx, const aiMesh* mesh, const std::string& outDir,
     const std::map<std::string, unsigned>& finalBoneMap)
 {
-    const float scaleFactor = 0.01f;
-    const bool applyRotationX = false;
-    const float angleX_degrees = -90.0f;
-    const bool applyRotationY = true;
-    const float angleY_degrees = 180.0f;
-    const bool applyRotationZ = false;
-    const float angleZ_degrees = 0.0f;
-
     aiMatrix4x4 correctionMatrix;
-    if (applyRotationZ) { aiMatrix4x4 rotZ; aiMatrix4x4::RotationZ(angleZ_degrees * (AI_MATH_PI_F / 180.0f), rotZ); correctionMatrix = rotZ * correctionMatrix; }
-    if (applyRotationX) { aiMatrix4x4 rotX; aiMatrix4x4::RotationX(angleX_degrees * (AI_MATH_PI_F / 180.0f), rotX); correctionMatrix = rotX * correctionMatrix; }
-    if (applyRotationY) { aiMatrix4x4 rotY; aiMatrix4x4::RotationY(angleY_degrees * (AI_MATH_PI_F / 180.0f), rotY); correctionMatrix = rotY * correctionMatrix; }
+    if (G_APPLY_ROTATION_Z) { aiMatrix4x4 rotZ; aiMatrix4x4::RotationZ(G_ANGLE_Z_DEGREES * (AI_MATH_PI_F / 180.0f), rotZ); correctionMatrix = rotZ * correctionMatrix; }
+    if (G_APPLY_ROTATION_X) { aiMatrix4x4 rotX; aiMatrix4x4::RotationX(G_ANGLE_X_DEGREES * (AI_MATH_PI_F / 180.0f), rotX); correctionMatrix = rotX * correctionMatrix; }
+    if (G_APPLY_ROTATION_Y) { aiMatrix4x4 rotY; aiMatrix4x4::RotationY(G_ANGLE_Y_DEGREES * (AI_MATH_PI_F / 180.0f), rotY); correctionMatrix = rotY * correctionMatrix; }
     aiMatrix4x4 normalMatrix = correctionMatrix;
     normalMatrix.Inverse().Transpose();
 
     std::vector<Vertex> vertices(mesh->mNumVertices);
     for (unsigned i = 0; i < mesh->mNumVertices; ++i) {
-        aiVector3D pos = mesh->mVertices[i] * scaleFactor;
+        aiVector3D pos = mesh->mVertices[i] * G_SCALE_FACTOR;
         aiVector3D nml = mesh->HasNormals() ? mesh->mNormals[i] : aiVector3D(0, 1, 0);
         aiVector3D tan = mesh->HasTangentsAndBitangents() ? mesh->mTangents[i] : aiVector3D(1, 0, 0);
+
         pos = correctionMatrix * pos;
         nml = normalMatrix * nml;
         tan = normalMatrix * tan;
-        vertices[i].position[0] = pos.x; vertices[i].position[1] = pos.y; vertices[i].position[2] = pos.z;
-        if (mesh->HasTextureCoords(0)) { vertices[i].texcoord[0] = mesh->mTextureCoords[0][i].x; vertices[i].texcoord[1] = mesh->mTextureCoords[0][i].y; }
-        vertices[i].normal[0] = nml.x; vertices[i].normal[1] = nml.y; vertices[i].normal[2] = nml.z;
-        vertices[i].tangent[0] = tan.x; vertices[i].tangent[1] = tan.y; vertices[i].tangent[2] = tan.z;
+
+        vertices[i].position[0] = pos.x;
+        vertices[i].position[1] = pos.y;
+        vertices[i].position[2] = pos.z;
+
+        if (mesh->HasTextureCoords(0)) {
+            vertices[i].texcoord[0] = mesh->mTextureCoords[0][i].x;
+            vertices[i].texcoord[1] = mesh->mTextureCoords[0][i].y;
+        }
+
+        vertices[i].normal[0] = nml.x;
+        vertices[i].normal[1] = nml.y;
+        vertices[i].normal[2] = nml.z;
+
+        vertices[i].tangent[0] = tan.x;
+        vertices[i].tangent[1] = tan.y;
+        vertices[i].tangent[2] = tan.z;
     }
 
     for (unsigned bi = 0; bi < mesh->mNumBones; ++bi) {
@@ -193,7 +205,8 @@ void processMesh(unsigned idx, const aiMesh* mesh, const std::string& outDir,
     }
     for (auto& v : vertices) NormalizeWeights(v);
 
-    std::vector<uint32_t> indices; indices.reserve(mesh->mNumFaces * 3);
+    std::vector<uint32_t> indices;
+    indices.reserve(mesh->mNumFaces * 3);
     for (unsigned f = 0; f < mesh->mNumFaces; ++f) {
         const aiFace& face = mesh->mFaces[f];
         for (unsigned j = 0; j < face.mNumIndices; ++j) indices.push_back(face.mIndices[j]);
@@ -229,9 +242,7 @@ void processMaterial(unsigned int idx, const aiMaterial* mat, const aiScene* sce
                     textureFile.write(reinterpret_cast<const char*>(embeddedTexture->pcData), embeddedTexture->mWidth);
                     textureFile.close();
                     j["diffuseTexture"] = outputTextureFilename;
-                    logln("  [Info] Extracted embedded texture to " + outputTextureFilename);
                 }
-                else { logln("  [Warning] Uncompressed embedded texture format not supported."); }
             }
         }
         else { std::filesystem::path p(texturePath); j["diffuseTexture"] = p.filename().string(); }
@@ -282,7 +293,17 @@ void processSkeleton(const aiScene* scene, const std::string& outDir,
         auto& bone = sortedBones[i];
         finalBoneMap[bone.name] = static_cast<unsigned int>(i);
         if (bone.parentIndex != -1) { bone.parentIndex = newIndices[bone.parentIndex]; }
-        json jb; jb["id"] = static_cast<unsigned int>(i); jb["name"] = bone.name; jb["parentId"] = bone.parentIndex; jb["offset"] = MatrixToJson(bone.offsetMatrix);
+
+        aiMatrix4x4 scaledOffsetMatrix = bone.offsetMatrix;
+        scaledOffsetMatrix.a4 *= G_SCALE_FACTOR;
+        scaledOffsetMatrix.b4 *= G_SCALE_FACTOR;
+        scaledOffsetMatrix.c4 *= G_SCALE_FACTOR;
+
+        json jb;
+        jb["id"] = static_cast<unsigned int>(i);
+        jb["name"] = bone.name;
+        jb["parentId"] = bone.parentIndex;
+        jb["offset"] = MatrixToJson(scaledOffsetMatrix);
         j["bones"].push_back(jb);
     }
     std::ofstream out(outDir + "/skeleton.json");
@@ -296,8 +317,17 @@ void processAnimation(unsigned idx, const aiAnimation* anim, const std::string& 
     j["channels"] = json::array();
     for (unsigned c = 0; c < anim->mNumChannels; ++c) {
         const aiNodeAnim* ch = anim->mChannels[c];
-        json jc; jc["bone"] = ch->mNodeName.C_Str(); jc["posKeys"] = json::array();
-        for (unsigned k = 0; k < ch->mNumPositionKeys; ++k) { const auto& pk = ch->mPositionKeys[k]; jc["posKeys"].push_back({ {"t",pk.mTime},{"x",pk.mValue.x},{"y",pk.mValue.y},{"z",pk.mValue.z} }); }
+        json jc; jc["bone"] = ch->mNodeName.C_Str();
+        jc["posKeys"] = json::array();
+        for (unsigned k = 0; k < ch->mNumPositionKeys; ++k) {
+            const auto& pk = ch->mPositionKeys[k];
+            jc["posKeys"].push_back({
+                {"t",pk.mTime},
+                {"x",pk.mValue.x * G_SCALE_FACTOR},
+                {"y",pk.mValue.y * G_SCALE_FACTOR},
+                {"z",pk.mValue.z * G_SCALE_FACTOR}
+                });
+        }
         jc["rotKeys"] = json::array();
         for (unsigned k = 0; k < ch->mNumRotationKeys; ++k) { const auto& rk = ch->mRotationKeys[k]; jc["rotKeys"].push_back({ {"t",rk.mTime},{"x",rk.mValue.x},{"y",rk.mValue.y},{"z",rk.mValue.z},{"w",rk.mValue.w} }); }
         jc["scaleKeys"] = json::array();
