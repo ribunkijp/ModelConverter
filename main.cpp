@@ -43,6 +43,7 @@ struct TempBoneInfo {
 };
 
 
+
 static inline void AddBoneWeight(Vertex& v, int boneId, float w) {
     for (int i = 0; i < 4; ++i) if (v.boneIDs[i] < 0) { v.boneIDs[i] = boneId; v.weights[i] = w; return; }
     int minIdx = 0; for (int i = 1; i < 4; ++i) if (v.weights[i] < v.weights[minIdx]) minIdx = i;
@@ -74,9 +75,9 @@ static bool FindBoneOffset(const aiScene* s, const std::string& name, aiMatrix4x
 }
 
 
-void processMesh(unsigned, const aiMesh*, const std::string&, std::map<std::string, unsigned>&, unsigned&);
+void processMesh(unsigned, const aiMesh*, const std::string&, const std::map<std::string, unsigned>&);
 void processMaterial(unsigned int, const aiMaterial*, const aiScene*, const std::string&);
-void processSkeleton(const aiScene*, const std::string&, const std::map<std::string, unsigned>&);
+void processSkeleton(const aiScene*, const std::string&, std::map<std::string, unsigned>&, std::map<std::string, unsigned>&);
 void processAnimation(unsigned, const aiAnimation*, const std::string&);
 void createSceneFile(const aiScene*, const std::string&);
 
@@ -101,16 +102,6 @@ int main(int argc, char* argv[]) {
 
     Assimp::Importer importer;
 
-#ifdef AI_CONFIG_IMPORT_FBX_READ_ALL_GEOMETRY_LAYERS
-    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_READ_ALL_GEOMETRY_LAYERS, true);
-#endif
-#ifdef AI_CONFIG_IMPORT_FBX_OPTIMIZE_EMPTY_ANIMATION_CURVES
-    importer.SetPropertyBool(AI_CONFIG_IMPORT_FBX_OPTIMIZE_EMPTY_ANIMATION_CURVES, false);
-#endif
-#ifdef AI_CONFIG_IMPORT_NO_SKELETON_MESHES
-    importer.SetPropertyBool(AI_CONFIG_IMPORT_NO_SKELETON_MESHES, false);
-#endif
-
     unsigned flags = aiProcess_Triangulate |
         aiProcess_ConvertToLeftHanded |
         aiProcess_GenNormals |
@@ -123,16 +114,28 @@ int main(int argc, char* argv[]) {
     const aiScene* scene = importer.ReadFile(abs.u8string(), flags);
     if (!scene) { logln(std::string("[Error] Assimp: ") + importer.GetErrorString()); return 1; }
 
-    std::map<std::string, unsigned> boneMap;
-    unsigned boneCounter = 0;
+
+    std::map<std::string, unsigned> tempBoneMap;
+    unsigned tempBoneCounter = 0;
+    for (unsigned i = 0; i < scene->mNumMeshes; ++i) {
+        const aiMesh* mesh = scene->mMeshes[i];
+        for (unsigned bi = 0; bi < mesh->mNumBones; ++bi) {
+            std::string name = mesh->mBones[bi]->mName.C_Str();
+            if (tempBoneMap.find(name) == tempBoneMap.end()) {
+                tempBoneMap[name] = tempBoneCounter++;
+            }
+        }
+    }
+
+    std::map<std::string, unsigned> finalBoneMap;
+    processSkeleton(scene, outDir, tempBoneMap, finalBoneMap);
+
 
     for (unsigned i = 0; i < scene->mNumMeshes; ++i)
-        processMesh(i, scene->mMeshes[i], outDir, boneMap, boneCounter);
+        processMesh(i, scene->mMeshes[i], outDir, finalBoneMap);
 
     for (unsigned i = 0; i < scene->mNumMaterials; ++i)
         processMaterial(i, scene->mMaterials[i], scene, outDir);
-
-    processSkeleton(scene, outDir, boneMap);
 
     for (unsigned i = 0; i < scene->mNumAnimations; ++i)
         processAnimation(i, scene->mAnimations[i], outDir);
@@ -143,11 +146,10 @@ int main(int argc, char* argv[]) {
     return 0;
 }
 
-// 网格
+// mesh
 void processMesh(unsigned idx, const aiMesh* mesh, const std::string& outDir,
-    std::map<std::string, unsigned>& boneMap, unsigned& boneCounter)
+    const std::map<std::string, unsigned>& finalBoneMap)
 {
-    // 配置模型
     const float scaleFactor = 0.01f;
     const bool applyRotationX = false;
     const float angleX_degrees = -90.0f;
@@ -180,13 +182,13 @@ void processMesh(unsigned idx, const aiMesh* mesh, const std::string& outDir,
     for (unsigned bi = 0; bi < mesh->mNumBones; ++bi) {
         aiBone* b = mesh->mBones[bi];
         std::string name = b->mName.C_Str();
-        unsigned id;
-        auto it = boneMap.find(name);
-        if (it == boneMap.end()) { id = boneCounter++; boneMap[name] = id; }
-        else id = it->second;
-        for (unsigned wi = 0; wi < b->mNumWeights; ++wi) {
-            unsigned vId = b->mWeights[wi].mVertexId; float w = b->mWeights[wi].mWeight;
-            if (vId < vertices.size() && w > 0.0f) AddBoneWeight(vertices[vId], (int)id, w);
+        auto it = finalBoneMap.find(name);
+        if (it != finalBoneMap.end()) {
+            unsigned finalId = it->second;
+            for (unsigned wi = 0; wi < b->mNumWeights; ++wi) {
+                unsigned vId = b->mWeights[wi].mVertexId; float w = b->mWeights[wi].mWeight;
+                if (vId < vertices.size() && w > 0.0f) AddBoneWeight(vertices[vId], (int)finalId, w);
+            }
         }
     }
     for (auto& v : vertices) NormalizeWeights(v);
@@ -205,36 +207,23 @@ void processMesh(unsigned idx, const aiMesh* mesh, const std::string& outDir,
     out.write((char*)indices.data(), indices.size() * sizeof(uint32_t));
 }
 
-// 材质
+// material
 void processMaterial(unsigned int idx, const aiMaterial* mat, const aiScene* scene, const std::string& outDir)
 {
     json j;
     auto logln = [](const std::string& s) { std::cout << s << std::endl; };
-
     aiColor4D diffuseColor;
-    if (AI_SUCCESS == aiGetMaterialColor(mat, AI_MATKEY_COLOR_DIFFUSE, &diffuseColor)) {
-        j["diffuseColor"] = { diffuseColor.r, diffuseColor.g, diffuseColor.b, diffuseColor.a };
-    }
-    else {
-        j["diffuseColor"] = { 1.0f, 1.0f, 1.0f, 1.0f };
-    }
-
+    if (AI_SUCCESS == aiGetMaterialColor(mat, AI_MATKEY_COLOR_DIFFUSE, &diffuseColor)) { j["diffuseColor"] = { diffuseColor.r, diffuseColor.g, diffuseColor.b, diffuseColor.a }; }
+    else { j["diffuseColor"] = { 1.0f, 1.0f, 1.0f, 1.0f }; }
     aiString texturePath_ai;
-    if (AI_SUCCESS == mat->GetTexture(aiTextureType_DIFFUSE, 0, &texturePath_ai))
-    {
+    if (AI_SUCCESS == mat->GetTexture(aiTextureType_DIFFUSE, 0, &texturePath_ai)) {
         std::string texturePath = texturePath_ai.C_Str();
-        if (texturePath.rfind('*', 0) == 0)
-        {
+        if (texturePath.rfind('*', 0) == 0) {
             int textureIndex = std::stoi(texturePath.substr(1));
-            if (scene && textureIndex < (int)scene->mNumTextures)
-            {
+            if (scene && textureIndex < (int)scene->mNumTextures) {
                 const aiTexture* embeddedTexture = scene->mTextures[textureIndex];
-                std::string extension = "png";
-                if (embeddedTexture->achFormatHint[0] != 0) {
-                    extension = embeddedTexture->achFormatHint;
-                }
+                std::string extension = "png"; if (embeddedTexture->achFormatHint[0] != 0) { extension = embeddedTexture->achFormatHint; }
                 std::string outputTextureFilename = "texture_" + std::to_string(idx) + "." + extension;
-
                 if (embeddedTexture->mHeight == 0) {
                     std::ofstream textureFile(outDir + "/" + outputTextureFilename, std::ios::binary);
                     textureFile.write(reinterpret_cast<const char*>(embeddedTexture->pcData), embeddedTexture->mWidth);
@@ -242,58 +231,37 @@ void processMaterial(unsigned int idx, const aiMaterial* mat, const aiScene* sce
                     j["diffuseTexture"] = outputTextureFilename;
                     logln("  [Info] Extracted embedded texture to " + outputTextureFilename);
                 }
-                else {
-                    logln("  [Warning] Uncompressed embedded texture format not supported.");
-                }
+                else { logln("  [Warning] Uncompressed embedded texture format not supported."); }
             }
         }
-        else
-        {
-            std::filesystem::path p(texturePath);
-            j["diffuseTexture"] = p.filename().string();
-        }
+        else { std::filesystem::path p(texturePath); j["diffuseTexture"] = p.filename().string(); }
     }
-
     std::string path = outDir + "/material_" + std::to_string(idx) + ".material.json";
     std::ofstream out(path);
     out << j.dump(4);
 }
 
-// 骨架
+// skeleton
 void processSkeleton(const aiScene* scene, const std::string& outDir,
-    const std::map<std::string, unsigned>& boneMap)
+    std::map<std::string, unsigned>& boneMap, std::map<std::string, unsigned>& finalBoneMap)
 {
     if (boneMap.empty()) {
-        json j;
-        j["bones"] = json::array();
-        std::ofstream out(outDir + "/skeleton.json");
-        out << j.dump(2);
+        json j; j["bones"] = json::array();
+        std::ofstream out(outDir + "/skeleton.json"); out << j.dump(2);
         return;
     }
-
-    std::unordered_map<std::string, const aiNode*> nodeMap;
-    BuildNodeMap(scene->mRootNode, nodeMap);
-
+    std::unordered_map<std::string, const aiNode*> nodeMap; BuildNodeMap(scene->mRootNode, nodeMap);
     std::vector<TempBoneInfo> unsortedBones;
     for (const auto& kv : boneMap) {
-        const std::string& name = kv.first;
-        unsigned id = kv.second;
-        int parentId = -1;
+        const std::string& name = kv.first; unsigned id = kv.second; int parentId = -1;
         auto itN = nodeMap.find(name);
         if (itN != nodeMap.end()) {
             const aiNode* p = itN->second->mParent;
-            if (p) {
-                auto itP = boneMap.find(p->mName.C_Str());
-                if (itP != boneMap.end()) {
-                    parentId = (int)itP->second;
-                }
-            }
+            if (p) { auto itP = boneMap.find(p->mName.C_Str()); if (itP != boneMap.end()) parentId = (int)itP->second; }
         }
-        aiMatrix4x4 off;
-        FindBoneOffset(scene, name, off);
+        aiMatrix4x4 off; FindBoneOffset(scene, name, off);
         unsortedBones.push_back({ name, id, parentId, off });
     }
-
     std::vector<TempBoneInfo> sortedBones;
     std::vector<int> newIndices(boneMap.size());
     std::vector<bool> added(boneMap.size(), false);
@@ -309,84 +277,46 @@ void processSkeleton(const aiScene* scene, const std::string& outDir,
             }
         }
     }
-
-    json j;
-    j["bones"] = json::array();
+    json j; j["bones"] = json::array();
     for (size_t i = 0; i < sortedBones.size(); ++i) {
         auto& bone = sortedBones[i];
-        if (bone.parentIndex != -1) {
-            bone.parentIndex = newIndices[bone.parentIndex];
-        }
-        json jb;
-        jb["id"] = i;
-        jb["name"] = bone.name;
-        jb["parentId"] = bone.parentIndex;
-        jb["offset"] = MatrixToJson(bone.offsetMatrix);
+        finalBoneMap[bone.name] = static_cast<unsigned int>(i);
+        if (bone.parentIndex != -1) { bone.parentIndex = newIndices[bone.parentIndex]; }
+        json jb; jb["id"] = static_cast<unsigned int>(i); jb["name"] = bone.name; jb["parentId"] = bone.parentIndex; jb["offset"] = MatrixToJson(bone.offsetMatrix);
         j["bones"].push_back(jb);
     }
-
     std::ofstream out(outDir + "/skeleton.json");
     out << j.dump(2);
 }
 
-// 动画
+// anim
 void processAnimation(unsigned idx, const aiAnimation* anim, const std::string& outDir) {
-    json j;
-    std::string name = anim->mName.C_Str(); if (name.empty()) name = "anim_" + std::to_string(idx);
-    j["name"] = name;
-    j["duration"] = anim->mDuration;
-    j["ticksPerSecond"] = (anim->mTicksPerSecond > 0.0 ? anim->mTicksPerSecond : 30.0);
+    json j; std::string name = anim->mName.C_Str(); if (name.empty()) name = "anim_" + std::to_string(idx);
+    j["name"] = name; j["duration"] = anim->mDuration; j["ticksPerSecond"] = (anim->mTicksPerSecond > 0.0 ? anim->mTicksPerSecond : 30.0);
     j["channels"] = json::array();
-
     for (unsigned c = 0; c < anim->mNumChannels; ++c) {
         const aiNodeAnim* ch = anim->mChannels[c];
-        json jc; jc["bone"] = ch->mNodeName.C_Str();
-        jc["posKeys"] = json::array();
-        for (unsigned k = 0; k < ch->mNumPositionKeys; ++k) {
-            const auto& pk = ch->mPositionKeys[k];
-            jc["posKeys"].push_back({ {"t",pk.mTime},{"x",pk.mValue.x},{"y",pk.mValue.y},{"z",pk.mValue.z} });
-        }
+        json jc; jc["bone"] = ch->mNodeName.C_Str(); jc["posKeys"] = json::array();
+        for (unsigned k = 0; k < ch->mNumPositionKeys; ++k) { const auto& pk = ch->mPositionKeys[k]; jc["posKeys"].push_back({ {"t",pk.mTime},{"x",pk.mValue.x},{"y",pk.mValue.y},{"z",pk.mValue.z} }); }
         jc["rotKeys"] = json::array();
-        for (unsigned k = 0; k < ch->mNumRotationKeys; ++k) {
-            const auto& rk = ch->mRotationKeys[k];
-            jc["rotKeys"].push_back({ {"t",rk.mTime},{"x",rk.mValue.x},{"y",rk.mValue.y},{"z",rk.mValue.z},{"w",rk.mValue.w} });
-        }
+        for (unsigned k = 0; k < ch->mNumRotationKeys; ++k) { const auto& rk = ch->mRotationKeys[k]; jc["rotKeys"].push_back({ {"t",rk.mTime},{"x",rk.mValue.x},{"y",rk.mValue.y},{"z",rk.mValue.z},{"w",rk.mValue.w} }); }
         jc["scaleKeys"] = json::array();
-        for (unsigned k = 0; k < ch->mNumScalingKeys; ++k) {
-            const auto& sk = ch->mScalingKeys[k];
-            jc["scaleKeys"].push_back({ {"t",sk.mTime},{"x",sk.mValue.x},{"y",sk.mValue.y},{"z",sk.mValue.z} });
-        }
+        for (unsigned k = 0; k < ch->mNumScalingKeys; ++k) { const auto& sk = ch->mScalingKeys[k]; jc["scaleKeys"].push_back({ {"t",sk.mTime},{"x",sk.mValue.x},{"y",sk.mValue.y},{"z",sk.mValue.z} }); }
         j["channels"].push_back(jc);
     }
     std::ofstream out(outDir + "/anim_" + std::to_string(idx) + ".anim");
     out << j.dump(2);
 }
 
-// 场景
+// scene
 void createSceneFile(const aiScene* scene, const std::string& outDir) {
-    json j;
-    j["mesh_count"] = scene->mNumMeshes;
-    j["material_count"] = scene->mNumMaterials;
-    j["animation_count"] = scene->mNumAnimations;
-
+    json j; j["mesh_count"] = scene->mNumMeshes; j["material_count"] = scene->mNumMaterials; j["animation_count"] = scene->mNumAnimations;
     j["meshes"] = json::array();
-    for (unsigned i = 0; i < scene->mNumMeshes; ++i) {
-        json m;
-        m["file"] = "mesh_" + std::to_string(i) + ".mesh";
-        m["materialIndex"] = scene->mMeshes[i]->mMaterialIndex;
-        j["meshes"].push_back(m);
-    }
-
+    for (unsigned i = 0; i < scene->mNumMeshes; ++i) { json m; m["file"] = "mesh_" + std::to_string(i) + ".mesh"; m["materialIndex"] = scene->mMeshes[i]->mMaterialIndex; j["meshes"].push_back(m); }
     j["materials"] = json::array();
-    for (unsigned i = 0; i < scene->mNumMaterials; ++i) {
-        j["materials"].push_back("material_" + std::to_string(i) + ".material.json");
-    }
-
+    for (unsigned i = 0; i < scene->mNumMaterials; ++i) { j["materials"].push_back("material_" + std::to_string(i) + ".material.json"); }
     j["animations"] = json::array();
-    for (unsigned i = 0; i < scene->mNumAnimations; ++i) {
-        j["animations"].push_back("anim_" + std::to_string(i) + ".anim");
-    }
-
+    for (unsigned i = 0; i < scene->mNumAnimations; ++i) { j["animations"].push_back("anim_" + std::to_string(i) + ".anim"); }
     j["skeleton"] = "skeleton.json";
     std::ofstream out(outDir + "/scene.json");
     out << j.dump(2);
