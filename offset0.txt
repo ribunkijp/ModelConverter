@@ -1,0 +1,146 @@
+# --- Export sword offset for engine: final = offset * handModel * playerWorld ---
+import bpy, json
+from mathutils import Matrix, Vector
+
+OUTPUT = "//sword_offset.json"     # 不改你的相对路径
+USE_CURRENT_FRAME = True           # 用现在的姿态
+REMOVE_SCALE = True                # 去掉缩放，避免引擎里“拉伸”错觉
+
+def row_major(m: Matrix):
+    return [[m[r][c] for c in range(4)] for r in range(4)]
+
+ctx = bpy.context
+deps = ctx.evaluated_depsgraph_get()
+ctx.view_layer.update()
+
+# 1) 骨架（活动对象，Pose 模式）
+arm = ctx.active_object
+if not arm or arm.type != 'ARMATURE':
+    raise RuntimeError("活动对象不是骨架。请选择骨架并进入 Pose 模式再运行。")
+if arm.mode != 'POSE':
+    raise RuntimeError("当前不是 Pose 模式。")
+
+# 2) 手骨（活动 Pose 骨）
+pbone = ctx.active_pose_bone
+if not pbone:
+    raise RuntimeError("未选中 Pose 骨。请选中右手骨再运行。")
+
+# 3) 剑对象（优先使用已选中）
+sword = None
+for o in ctx.selected_objects:
+    if o != arm and o.type in {'MESH','EMPTY','CURVE','FONT','GPENCIL'}:
+        sword = o
+        break
+if not sword:
+    raise RuntimeError("未选中剑对象（Mesh/Empty）。请选中剑再运行脚本。")
+
+# 4) 取矩阵
+arm_eval   = arm.evaluated_get(deps)
+swd_eval   = sword.evaluated_get(deps)
+arm_world  = arm_eval.matrix_world
+swd_world  = swd_eval.matrix_world
+
+# handModel：手骨相对骨架对象（模型空间）的矩阵
+if USE_CURRENT_FRAME:
+    hand_model = pbone.matrix.copy()                       # pose-space (object space)
+else:
+    eb = arm.data.bones[pbone.name]
+    hand_model = eb.matrix_local.copy()                    # rest pose (object space)
+
+# sword_model：把剑从世界带回到骨架对象空间
+sword_model = arm_world.inverted() @ swd_world
+
+# 5) offset = inv(hand_model) * sword_model
+offset = hand_model.inverted() @ sword_model
+
+# 6)（可选）去掉缩放，避免引擎视觉拉伸
+if REMOVE_SCALE:
+    loc, rot, _ = offset.decompose()
+    offset = Matrix.LocRotScale(loc, rot, (1.0, 1.0, 1.0))
+
+# 7) 导出 JSON（行主序）
+out_path = bpy.path.abspath(OUTPUT)
+with open(out_path, "w", encoding="utf-8") as f:
+    json.dump({"offset_matrix_4x4": row_major(offset)}, f, indent=2)
+
+print("[SwordOffset] OK")
+print("Armature :", arm.name)
+print("Bone     :", pbone.name)
+print("Sword    :", sword.name)
+print("Output   :", out_path)
+# === Export sword_offset.json (Offset from Sword->RightHand) ===
+# 用法：
+# 1) 打开含 骨架+剑 的 .blend
+# 2) （推荐）把 Armature 设为 Rest Position；或用当前 Pose 也可（见 USE_REST_POSE）
+# 3) 在脚本编辑器粘贴本脚本并运行
+
+import bpy, json, mathutils
+
+# ---------- 配置 ----------
+ARMATURE_NAME = "Armature"            # 骨架对象名
+BONE_NAME     = "mixamorig:RightHand" # 右手骨骼名（按你的实际改）
+SWORD_NAME    = "Maria_sword"         # 剑对象名
+OUT_PATH      = bpy.path.abspath("//sword_offset.json")
+
+USE_REST_POSE = True   # True=用 Rest Pose；False=用当前 Pose
+REMOVE_SCALE  = True   # True=把 offset 的缩放去掉（常用）
+SWAP_YZ       = False  # 若 FBX 导出做了 Y↔Z 坐标交换，这里也设 True 做同样交换
+TRANSPOSE_DX  = True   # 导出为 DirectX 行主序（row-major），你的引擎需要 → True
+
+# ---------- 取对象 ----------
+arm   = bpy.data.objects.get(ARMATURE_NAME)
+sword = bpy.data.objects.get(SWORD_NAME)
+if arm is None or sword is None:
+    raise RuntimeError("找不到 Armature 或 Sword 对象，请检查名称。")
+
+pbone = arm.pose.bones.get(BONE_NAME)
+if pbone is None:
+    raise RuntimeError(f"找不到骨骼：{BONE_NAME}")
+
+# ---------- 取“模型空间”矩阵 ----------
+# 手骨：模型(角色)空间下的手骨矩阵
+if USE_REST_POSE:
+    # Rest：骨架世界 * 骨骼的局部(静止)矩阵
+    M_hand_model = arm.matrix_world @ pbone.bone.matrix_local
+else:
+    # Pose：骨架世界 * 骨骼当前姿态矩阵
+    M_hand_model = arm.matrix_world @ pbone.matrix
+
+# 剑：模型(世界)空间矩阵（通常就是 world）
+M_sword_model = sword.matrix_world
+
+# ---------- 计算 offset ----------
+# 目标：把“剑局部”通过 offset 变到“右手局部”
+# 引擎里行向量左乘： final = offset * hand * player
+# 所以：offset = M_sword_model * inverse(M_hand_model)
+offset = M_sword_model @ M_hand_model.inverted()
+
+# 去掉缩放（可选，但对挂武器通常更稳）
+if REMOVE_SCALE:
+    loc, rot, sca = offset.decompose()
+    offset = mathutils.Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
+
+# 若你的 FBX 导出做了 Y↔Z 交换（Y-Up/Z-Up 改轴），这里也做同样交换，确保与引擎一致
+if SWAP_YZ:
+    C = mathutils.Matrix((
+        (1, 0, 0, 0),
+        (0, 0, 1, 0),  # Y <- Z
+        (0, 1, 0, 0),  # Z <- Y
+        (0, 0, 0, 1),
+    ))
+    offset = C @ offset @ C.inverted()
+
+# Blender 内部列主序；你的 HLSL 使用 row_major + mul(rowVec, M)。
+# 因此导出时转置以匹配 DirectX 的内存/乘法约定。
+mat_out = offset.transposed() if TRANSPOSE_DX else offset
+
+# ---------- 写 JSON ----------
+data = {"offset_matrix_4x4": [[float(mat_out[i][j]) for j in range(4)] for i in range(4)]}
+with open(OUT_PATH, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+print("Wrote:", OUT_PATH)
+
+# ---------- 可选：打印调试信息 ----------
+print("Hand(model) =\n", M_hand_model)
+print("Sword(model)=\n", M_sword_model)
+print("Offset(out) =\n", mat_out)
