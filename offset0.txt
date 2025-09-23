@@ -2,9 +2,9 @@
 import bpy, json
 from mathutils import Matrix, Vector
 
-OUTPUT = "//sword_offset.json"     # 不改你的相对路径
+OUTPUT = "//sword_offset.json"     # 输出路径
 USE_CURRENT_FRAME = True           # 用现在的姿态
-REMOVE_SCALE = True                # 去掉缩放，避免引擎里“拉伸”错觉
+REMOVE_SCALE = True                # 去掉缩放，避免引擎里拉伸
 
 def row_major(m: Matrix):
     return [[m[r][c] for c in range(4)] for r in range(4)]
@@ -120,7 +120,7 @@ if REMOVE_SCALE:
     loc, rot, sca = offset.decompose()
     offset = mathutils.Matrix.Translation(loc) @ rot.to_matrix().to_4x4()
 
-# 若你的 FBX 导出做了 Y↔Z 交换（Y-Up/Z-Up 改轴），这里也做同样交换，确保与引擎一致
+# 若FBX 导出做了 Y↔Z 交换（Y-Up/Z-Up 改轴），这里也做同样交换，确保与引擎一致
 if SWAP_YZ:
     C = mathutils.Matrix((
         (1, 0, 0, 0),
@@ -130,7 +130,7 @@ if SWAP_YZ:
     ))
     offset = C @ offset @ C.inverted()
 
-# Blender 内部列主序；你的 HLSL 使用 row_major + mul(rowVec, M)。
+# Blender 内部列主序；HLSL 使用 row_major + mul(rowVec, M)。
 # 因此导出时转置以匹配 DirectX 的内存/乘法约定。
 mat_out = offset.transposed() if TRANSPOSE_DX else offset
 
@@ -140,7 +140,7 @@ with open(OUT_PATH, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=2)
 print("Wrote:", OUT_PATH)
 
-# ---------- 可选：打印调试信息 ----------
+# ---------- 打印调试信息 ----------
 print("Hand(model) =\n", M_hand_model)
 print("Sword(model)=\n", M_sword_model)
 print("Offset(out) =\n", mat_out)
