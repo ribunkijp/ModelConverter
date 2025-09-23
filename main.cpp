@@ -26,7 +26,7 @@
 using json = nlohmann::json;
 
 // 模型缩放
-const float G_SCALE_FACTOR = 0.01f; 
+const float G_SCALE_FACTOR = 0.01f;
 
 struct Vertex {
     float position[3]{};
